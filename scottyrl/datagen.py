@@ -32,8 +32,10 @@ def extension_suffix(accumulated: list[int], prompt_tokens: list[int]) -> list[i
         extension_suffix([1, 2, 3], [1, 2])          -> None
         extension_suffix([], [1, 2])                 -> [1, 2]  (an empty sequence is a prefix of anything)
     """
-    # TODO(student): implement this function.
-    raise NotImplementedError
+    prefix_length = len(accumulated)
+    if prompt_tokens[:prefix_length] != accumulated:
+        return None
+    return prompt_tokens[prefix_length:]
 
 
 def stitch_trajectory(traj: Trajectory) -> list[TokenSequence]:
@@ -78,8 +80,42 @@ def stitch_trajectory(traj: Trajectory) -> list[TokenSequence]:
 
     Returns: list of TokenSequence (possibly empty).
     """
-    # TODO(student): implement this function.
-    raise NotImplementedError
+    sequences: list[TokenSequence] = []
+    tokens: list[int] = []
+    mask: list[int] = []
+    logprobs: list[float] = []
+
+    def emit_sequence() -> None:
+        # The first token is input only and has no preceding prediction.
+        target_mask = mask[1:]
+        if any(target_mask):
+            sequences.append(
+                TokenSequence(
+                    tokens=tokens,
+                    mask=target_mask,
+                    logprobs=logprobs[1:],
+                    advantages=[0.0] * len(target_mask),
+                )
+            )
+
+    for call in traj.calls:
+        suffix = extension_suffix(tokens, call.prompt_tokens)
+        if suffix is None:
+            emit_sequence()
+            tokens, mask, logprobs = [], [], []
+            suffix = call.prompt_tokens
+
+        # Track metadata per token until emit_sequence shifts it to targets.
+        tokens.extend(suffix)
+        mask.extend([0] * len(suffix))
+        logprobs.extend([0.0] * len(suffix))
+
+        tokens.extend(call.completion_tokens)
+        mask.extend([1] * len(call.completion_tokens))
+        logprobs.extend(call.completion_logprobs)
+
+    emit_sequence()
+    return sequences
 
 
 def trajectory_to_training_sequences(traj: Trajectory, advantage: float) -> list[TokenSequence]:
@@ -88,5 +124,7 @@ def trajectory_to_training_sequences(traj: Trajectory, advantage: float) -> list
     position stays 0.0. (In REINFORCE/GRPO, all tokens the policy generated
     in an episode share the episode-level advantage.)
     """
-    # TODO(student): implement this function.
-    raise NotImplementedError
+    sequences = stitch_trajectory(traj)
+    for sequence in sequences:
+        sequence.advantages = [advantage if is_action else 0.0 for is_action in sequence.mask]
+    return sequences

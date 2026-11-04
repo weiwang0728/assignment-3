@@ -6,6 +6,7 @@ suite calls it directly.
 
 from __future__ import annotations
 
+from statistics import mean
 from typing import Sequence
 
 
@@ -36,5 +37,16 @@ def compute_group_advantages(
     variant, which drops the std term to avoid biasing updates by group
     difficulty). See the handout's background section.
     """
-    # TODO(student): implement this function.
-    raise NotImplementedError
+    if method == "reinforce":
+        return [float(reward) for reward in rewards]
+    if method != "grpo":
+        raise ValueError(f"Unknown advantage method: {method!r}")
+
+    if len(rewards) < 2:
+        raise ValueError("GRPO requires at least two rewards")
+    first_reward = rewards[0]
+    if all(reward == first_reward for reward in rewards):
+        return None
+
+    group_mean = float(mean(rewards))
+    return [reward - group_mean for reward in rewards]

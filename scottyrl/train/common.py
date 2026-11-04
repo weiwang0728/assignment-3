@@ -6,16 +6,17 @@ trainers.
 
 from __future__ import annotations
 
-import asyncio  # noqa: F401  (student dependency)
+import asyncio
+from statistics import mean
 from typing import Callable
 
-from scottyrl.advantages import compute_group_advantages  # noqa: F401  (student dependency)
+from scottyrl.advantages import compute_group_advantages
 from scottyrl.agents.base import Agent
 from scottyrl.agents.xml_tool_call import XMLToolCallAgent
-from scottyrl.datagen import trajectory_to_training_sequences  # noqa: F401  (student dependency)
+from scottyrl.datagen import trajectory_to_training_sequences
 from scottyrl.envs.base import Env
 from scottyrl.policy import Policy
-from scottyrl.rollout import run_episode  # noqa: F401  (student dependency)
+from scottyrl.rollout import run_episode
 from scottyrl.types import Task, TokenSequence, Trajectory
 
 
@@ -36,8 +37,11 @@ async def collect_group(
 
     Returns: `group_size` trajectories, in rollout order.
     """
-    # TODO(student): implement this function.
-    raise NotImplementedError
+    rollouts = [
+        run_episode(agent_cls(policy), env_factory(task))
+        for _ in range(group_size)
+    ]
+    return await asyncio.gather(*rollouts)
 
 
 def groups_to_batch(
@@ -65,5 +69,27 @@ def groups_to_batch(
         "num_sequences"           len(sequences)
         "num_action_tokens"       total mask==1 positions in the batch
     """
-    # TODO(student): implement this function.
-    raise NotImplementedError
+    sequences: list[TokenSequence] = []
+    all_rewards: list[float] = []
+    num_degenerate_groups = 0
+
+    for group in groups:
+        rewards = [trajectory.reward for trajectory in group]
+        all_rewards.extend(rewards)
+        advantages = compute_group_advantages(rewards, method=method)
+        if advantages is None:
+            num_degenerate_groups += 1
+            continue
+
+        for trajectory, advantage in zip(group, advantages, strict=True):
+            sequences.extend(trajectory_to_training_sequences(trajectory, advantage))
+
+    stats = {
+        "num_groups": len(groups),
+        "num_degenerate_groups": num_degenerate_groups,
+        "frac_degenerate_groups": num_degenerate_groups / len(groups) if groups else 0.0,
+        "mean_reward": float(mean(all_rewards)) if all_rewards else 0.0,
+        "num_sequences": len(sequences),
+        "num_action_tokens": sum(sequence.num_action_tokens for sequence in sequences),
+    }
+    return sequences, stats
