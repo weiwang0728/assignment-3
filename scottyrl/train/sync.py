@@ -10,13 +10,13 @@ grading suite calls them individually); `train()` composes them.
 
 from __future__ import annotations
 
-import asyncio  # noqa: F401  (student dependency)
+import asyncio
 import random
 from collections.abc import Callable
 
 from scottyrl.config import ModelConfig, TrainConfig
 from scottyrl.envs.base import Env
-from scottyrl.evaluate import evaluate_policy  # noqa: F401  (student dependency)
+from scottyrl.evaluate import evaluate_policy
 from scottyrl.metrics import (
     MetricsLogger,
     pass_at_k,
@@ -25,7 +25,7 @@ from scottyrl.metrics import (
 )
 from scottyrl.policy import TinkerPolicy, load_chat_template
 from scottyrl.tinker_adapter import TinkerSession
-from scottyrl.train.common import collect_group, groups_to_batch  # noqa: F401  (student dependency)
+from scottyrl.train.common import collect_group, groups_to_batch
 from scottyrl.types import Task, TokenSequence, Trajectory
 
 
@@ -166,8 +166,20 @@ class SyncTrainer:
 
         Returns: list of groups - one group (list of Trajectory) per sampled task.
         """
-        # TODO(student): implement this method.
-        raise NotImplementedError
+        tasks = self.rng.sample(self.train_tasks, self.cfg.tasks_per_batch)
+        agent_cls = self.agent_cls()
+        return await asyncio.gather(
+            *(
+                collect_group(
+                    policy,
+                    task,
+                    self.env_factory,
+                    group_size=self.cfg.group_size,
+                    agent_cls=agent_cls,
+                )
+                for task in tasks
+            )
+        )
 
     def build_batch(
         self, groups: list[list[Trajectory]]
@@ -179,8 +191,7 @@ class SyncTrainer:
         `groups_to_batch`. `train()` hands both to the given
         `record_training`, which merges `stats` into the step's record.
         """
-        # TODO(student): implement this method.
-        raise NotImplementedError
+        return groups_to_batch(groups, method=self.cfg.algo)
 
     async def update(self, seqs: list[TokenSequence]) -> dict:
         """Run one optimizer step on `seqs` through the session:
@@ -190,8 +201,12 @@ class SyncTrainer:
         `train()` hands it to the given `record_training`; do not log it
         here.
         """
-        # TODO(student): implement this method.
-        raise NotImplementedError
+        return await self.session.train_step(
+            seqs,
+            loss_fn=self.cfg.loss_fn,
+            lr=self.cfg.lr,
+            grad_clip_norm=self.cfg.grad_clip_norm,
+        )
 
     async def evaluate_now(self, policy) -> dict:
         """Held-out evaluation of `policy`: the first cfg.eval_tasks
@@ -202,8 +217,13 @@ class SyncTrainer:
         `record_evaluation` owns the "eval/" prefix and the logging; the
         entry script also calls this method for the step-0 baseline.
         """
-        # TODO(student): implement this method.
-        raise NotImplementedError
+        return await evaluate_policy(
+            policy,
+            self.val_tasks[: self.cfg.eval_tasks],
+            self.env_factory,
+            k=self.cfg.eval_k,
+            agent_cls=self.agent_cls(),
+        )
 
     # ------------------------------------------------------------- driver --
 
@@ -237,5 +257,20 @@ class SyncTrainer:
             you by scripts/train_sync.py before train() is called; you only
             handle the periodic evaluations.
         """
-        # TODO(student): implement this method.
-        raise NotImplementedError
+        policy = self.make_policy(
+            await self.session.new_sampling_client("step_000000")
+        )
+        for step in range(1, self.cfg.num_steps + 1):
+            groups = await self.collect_batch(policy)
+            seqs, batch_stats = self.build_batch(groups)
+            train_metrics = {}
+            if seqs:
+                train_metrics = await self.update(seqs)
+                # Refresh only after the update finishes: the next batch must
+                # sample from the weights that just consumed this batch.
+                policy = self.make_policy(
+                    await self.session.new_sampling_client(f"step_{step:06d}")
+                )
+            self.record_training(step, groups, seqs, batch_stats, train_metrics)
+            if self.eval_due(step):
+                self.record_evaluation(step, await self.evaluate_now(policy))
